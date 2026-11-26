@@ -1,0 +1,15 @@
+{
+  "name": "my-back-app",
+  "version": "1.0.0",
+  "description": "Application Backend Node.js avec observabilité Datadog",
+  "main": "app.js",
+  "scripts": {
+    "start": "node app.js"
+  },
+  "dependencies": {
+    "dd-trace": "^5.0.0",
+    "express": "^4.19.2",
+    "hot-shots": "^10.0.0",
+    "winston": "^3.11.0"
+  }
+}

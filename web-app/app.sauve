@@ -1,0 +1,147 @@
+// 1. Initialisation de l'APM Datadog (OBLIGATOIREMENT EN PREMIER)
+const tracer = require('dd-trace').init({
+  logInjection: true // Injecte automatiquement les IDs de trace dans les logs
+});
+
+const express = require('express');
+const StatsD = require('hot-shots');
+
+// 2. Configuration du client DogStatsD pour les métriques
+const dogstatsd = new StatsD({
+  host: process.env.DD_AGENT_HOST || 'localhost',
+  port: 8125,
+  prefix: 'myapp.'
+});
+
+const app = express();
+const PORT = process.env.PORT || 3000;
+
+// 3. Middleware global : logue automatiquement chaque requête avec son code HTTP réel (200, 404, etc.)
+app.use((req, res, next) => {
+  res.on('finish', () => {
+    // Détermine le niveau de log en fonction du code HTTP (warn pour 4xx/5xx, info pour le reste)
+    const statusType = res.statusCode >= 400 ? 'warn' : 'info';
+
+    console.log(JSON.stringify({
+      message: `Requête ${req.method} ${req.originalUrl}`,
+      http_status: res.statusCode,
+	// j'utilise un mot réservé de datadog voir doc https://docs.datadoghq.com/standard-attributes?product=log
+      http: { 
+status_code: res.statusCode // <-- C'est cette imbrication qui est reconnue nativement par Datadog 
+}, 
+      status: statusType,
+      route: req.path,
+      timestamp: new Date().toISOString()
+    }));
+  });
+  next();
+});
+
+// 4. Route principale '/appel_back'
+// Liste des 3 conteneurs backend 
+const backends = [
+  'http://my-back-container-1:3000',
+  'http://my-back-container-2:3000',
+  'http://my-back-container-3:3000'
+];
+
+// 4. Route principale '/'
+app.get('/', (req, res) => {
+  // Incrémentation d'une métrique personnalisée DogStatsD
+  dogstatsd.increment('page.views', 1, ['env:production', 'route:home']);
+
+  res.send(`
+    <!DOCTYPE html>
+    <html lang="fr">
+      <head>
+        <meta charset="UTF-8">
+        <title>Mon Application Web Observabilisée</title>
+        <!-- SDK Client Datadog RUM -->
+        <script src="https://www.datadoghq-browser-agent.com/eu1/v5/datadog-rum.js"></script>
+        <script>
+          window.DD_RUM && window.DD_RUM.init({
+            applicationId: '19f15b29-129c-4e30-abf1-2b142e8ef550',
+            clientToken: 'pubdfaf7780b9c87c02322d847929c10554',
+            site: 'datadoghq.eu',
+            service: 'my-node-app',
+            env: 'production',
+            version: '1.0.0',
+            sessionSampleRate: 100,
+            sessionReplaySampleRate: 20,
+            trackResources: true,
+            trackUserInteractions: true,
+            trackLongTasks: true,
+          });
+        </script>
+      </head>
+      <body>
+        <h1>Hello World !</h1>
+        <p>L'application Node.js est pleinement connectée à Datadog.</p>
+      </body>
+    </html>
+  `);
+});
+
+app.get('/appel_back', async (req, res) => {
+  try {
+    // Sélection aléatoire d'un backend dans le tableau
+    const randomIndex = Math.floor(Math.random() * backends.length);
+    const targetBackend = backends[randomIndex];
+
+    console.log(`[Front] Appel envoyé vers : ${targetBackend}`);
+    // Appel HTTP vers le backend choisi aléatoirement
+    const response = await fetch(`${targetBackend}/back_appel`);
+    
+    if (!response.ok) {
+      throw new Error(`Erreur HTTP : ${response.status}`);
+    }
+
+    const data = await response.text();
+
+    res.send(`
+      <div>
+     	  <h1>Appel du serveur back</h1> <strong>${targetBackend}</strong>${data}
+     </div>
+    `);
+  } catch (error) {
+    // Message de logs
+    //console.error("Erreur lors de l'appel au back :", error);
+   console.error(`[Front] Erreur lors de l'appel vers ${targetBackend} : ${error.message}`);
+// Message envoyé au client
+res.status(500).send(`Erreur lors de l'appel au back : ${targetBackend}`);
+  }
+});
+
+
+
+// 5. Route de test d'erreur (pour visualiser les exceptions dans l'APM Datadog)
+app.get('/error', (req, res) => {
+  throw new Error("C'est une erreur de test volontaire pour Datadog APM !");
+});
+
+// 6. Gestionnaire 404 (À placer TOUT À LA FIN, après toutes les routes valides)
+app.use((req, res, next) => {
+  res.status(404).send(`
+    <!DOCTYPE html>
+    <html lang="fr">
+      <head>
+        <meta charset="UTF-8">
+        <title>Erreur 404 - Page non trouvée</title>
+      </head>
+      <body>
+        <h1>404 - Introuvable</h1>
+        <p>La ressource <code>${req.originalUrl}</code> demandée n'existe pas.</p>
+      </body>
+    </html>
+  `);
+});
+
+// 7. Démarrage du serveur
+app.listen(PORT, () => {
+  console.log(JSON.stringify({
+    message: `Serveur démarré avec succès sur le port ${PORT}`,
+    status: "info",
+    timestamp: new Date().toISOString()
+  }));
+});
+

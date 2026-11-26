@@ -1,0 +1,86 @@
+// 1. Initialisation de l'APM Datadog (OBLIGATOIREMENT EN PREMIER)
+const tracer = require('dd-trace').init({
+  logInjection: true // Injecte automatiquement les IDs de trace dans les logs
+});
+
+const express = require('express');
+const StatsD = require('hot-shots');
+
+// 2. Configuration du client DogStatsD pour les métriques
+const dogstatsd = new StatsD({
+  host: process.env.DD_AGENT_HOST || 'localhost',
+  port: 8125,
+  prefix: 'myapp.'
+});
+
+const app = express();
+const PORT = process.env.PORT || 3000;
+
+// 3. Middleware global : logue automatiquement chaque requête avec son code HTTP réel (200, 404, etc.)
+app.use((req, res, next) => {
+  res.on('finish', () => {
+    // Détermine le niveau de log en fonction du code HTTP (warn pour 4xx/5xx, info pour le reste)
+    const statusType = res.statusCode >= 400 ? 'warn' : 'info';
+
+    console.log(JSON.stringify({
+      message: `Requête ${req.method} ${req.originalUrl}`,
+      http_status: res.statusCode,
+      status: statusType,
+      route: req.path,
+      timestamp: new Date().toISOString()
+    }));
+  });
+  next();
+});
+
+// 4. Route principale '/back_appel'
+app.get('/back_appel', (req, res) => {
+  // Incrémentation d'une métrique personnalisée DogStatsD
+  dogstatsd.increment('page.views', 1, ['env:production', 'route:home']);
+
+  res.send(`
+    <!DOCTYPE html>
+    <html lang="fr">
+      <head>
+        <meta charset="UTF-8">
+        <title>Mon Application Web Observabilisée</title>
+</head>
+      <body>
+        <h1>repseption du message back appel</h1>
+        <p>L'application Node.js est pleinement connectée à Datadog.</p>
+      </body>
+    </html>
+  `);
+});
+
+// 5. Route de test d'erreur (pour visualiser les exceptions dans l'APM Datadog)
+app.get('/error', (req, res) => {
+  throw new Error("C'est une erreur de test volontaire pour Datadog APM !");
+});
+
+// 6. Gestionnaire 404 (À placer TOUT À LA FIN, après toutes les routes valides)
+app.use((req, res, next) => {
+  res.status(404).send(`
+    <!DOCTYPE html>
+    <html lang="fr">
+      <head>
+        <meta charset="UTF-8">
+        <title>Erreur 404 - Page non trouvée</title>
+      </head>
+      <body>
+        <h1>404 - Introuvable</h1>
+        <p>La ressource <code>${req.originalUrl}</code> demandée n'existe pas.</p>
+      </body>
+    </html>
+  `);
+});
+
+// 7. Démarrage du serveur
+app.listen(PORT, () => {
+  console.log(JSON.stringify({
+    message: `Serveur démarré avec succès sur le port ${PORT}`,
+    status: "info",
+    timestamp: new Date().toISOString()
+  }));
+});
+
